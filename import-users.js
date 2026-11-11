@@ -26,7 +26,7 @@ async function main() {
     if (!password) throw new Error(`У пользователя ${source.id} нет пароля.`);
     const exists = await User.exists({ id: String(source.id) });
     if (exists) { skipped++; continue; }
-    await User.create({
+    const fields = {
       id: String(source.id), username: source.username,
       usernameLower: source.username.toLowerCase(),
       email: typeof source.email === 'string' ? source.email.trim().toLowerCase() : '',
@@ -36,7 +36,19 @@ async function main() {
       twoFactorEnabled: source.is2FAEnabled === true,
       trialUsed: source.trialUsed === true,
       bootstrapPasswordVersion: source.bootstrapPasswordVersion || ''
-    });
+    };
+    const sameName = await User.findOne({ usernameLower: fields.usernameLower });
+    if (sameName) {
+      // A first server start may have created this empty admin before the import.
+      if (fields.role !== 'admin' || sameName.role !== 'admin' || sameName.email !== '' ||
+          sameName.bootstrapPasswordVersion !== 'env-managed-admin-v3') {
+        throw new Error(`Имя пользователя ${source.username} уже занято другой записью.`);
+      }
+      Object.assign(sameName, fields);
+      await sameName.save();
+    } else {
+      await User.create(fields);
+    }
     imported++;
   }
   console.log(`Импортировано: ${imported}; уже существовали: ${skipped}.`);
