@@ -14,16 +14,21 @@ async function freePort() {
   return port;
 }
 
-test('registration verification and password recovery', async () => {
+test('registration verification and password recovery', { skip: !process.env.MONGO_TEST_URI && 'Set MONGO_TEST_URI to run the MongoDB integration test' }, async () => {
   const directory = fs.mkdtempSync(path.join(__dirname, 'auth-temp-'));
   const port = await freePort();
   const adminUsername = `test_admin_${crypto.randomBytes(4).toString('hex')}`;
   const adminPassword = crypto.randomBytes(24).toString('base64url');
+  const mongoUrl = new URL(process.env.MONGO_TEST_URI);
+  mongoUrl.pathname = `/leniks_test_${crypto.randomBytes(8).toString('hex')}`;
+  const mongoUri = mongoUrl.toString();
   fs.copyFileSync(path.join(__dirname, '..', 'server.js'), path.join(directory, 'server.js'));
+  fs.mkdirSync(path.join(directory, 'models'));
+  fs.copyFileSync(path.join(__dirname, '..', 'models', 'User.js'), path.join(directory, 'models', 'User.js'));
   fs.writeFileSync(path.join(directory, 'mailer.js'), "const fs = require('node:fs'); const send = purpose => async (email, code) => { if (email === 'fail@example.com') { const error = new Error('Invalid login'); error.code = 'EAUTH'; throw error; } fs.writeFileSync(__dirname + '/mail.json', JSON.stringify({ email, code, purpose })); }; exports.sendVerificationEmail = send('register'); exports.sendPasswordResetEmail = send('reset'); exports.sendLoginCodeEmail = send('login');\n");
   const child = spawn(process.execPath, ['server.js'], {
     cwd: directory,
-    env: { ...process.env, PORT: String(port), LENIKS_TOKEN_SECRET: 'test-secret', LENIKS_ADMIN_USERNAME: adminUsername, LENIKS_ADMIN_PASSWORD: adminPassword, NODE_PATH: path.join(__dirname, '..', 'node_modules') },
+    env: { ...process.env, MONGO_URI: mongoUri, PORT: String(port), LENIKS_TOKEN_SECRET: 'test-secret', LENIKS_ADMIN_USERNAME: adminUsername, LENIKS_ADMIN_PASSWORD: adminPassword, NODE_PATH: path.join(__dirname, '..', 'node_modules') },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let output = '';
@@ -58,14 +63,12 @@ test('registration verification and password recovery', async () => {
     const firstMail = JSON.parse(fs.readFileSync(path.join(directory, 'mail.json'), 'utf8'));
     assert.equal(firstMail.email, 'test@example.com');
     assert.equal(firstMail.purpose, 'register');
-    assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'users.json'))).length, 1);
     assert.equal((await post('/api/register/verify', { email: registration.email, code: 'abcdef' })).status, 400);
     const verified = await post('/api/register/verify', { email: registration.email, code: firstMail.code });
     assert.equal(verified.status, 201);
     assert.ok(verified.body.token);
     assert.equal(verified.body.user.email, 'test@example.com');
     assert.equal(verified.body.user.is2FAEnabled, false);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'users.json'))).length, 2);
     assert.equal((await post('/api/register/verify', { email: registration.email, code: firstMail.code })).status, 400);
     assert.equal((await post('/api/login', { login: registration.username, password: registration.password })).status, 200);
 
@@ -112,5 +115,9 @@ test('registration verification and password recovery', async () => {
     }
     assert.ok(path.resolve(directory).startsWith(path.resolve(__dirname) + path.sep + 'auth-temp-'));
     fs.rmSync(directory, { recursive: true, force: true });
+    const mongoose = require('mongoose');
+    await mongoose.connect(mongoUri);
+    await mongoose.connection.dropDatabase();
+    await mongoose.disconnect();
   }
 });
